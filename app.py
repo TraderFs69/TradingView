@@ -7,56 +7,103 @@ st.set_page_config(layout="wide")
 
 st.title("📊 TEA - Trading Dashboard")
 
-# 🔎 Input utilisateur
 ticker = st.text_input("Ticker", "AAPL")
 
-# 🚀 CACHE DATA (optimisé Polygon)
+# 🔥 CACHE
 @st.cache_data(ttl=60)
 def get_data(ticker):
     API_KEY = st.secrets["POLYGON_API_KEY"]
-
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2024-01-01/2024-03-01?apiKey={API_KEY}"
+    response = requests.get(url)
+    return response.json()
 
-    try:
-        response = requests.get(url)
-        return response.json()
-    except:
-        return None
-
-# 🔗 Appel des données
 data = get_data(ticker)
 
-# ❌ Gestion erreurs
-if data is None:
-    st.error("❌ Erreur de connexion API")
-    st.stop()
-
 if "results" not in data:
-    st.error("❌ Données invalides (clé API, limite ou ticker)")
+    st.error("❌ Problème API")
     st.stop()
 
-# 📊 Traitement données
 df = pd.DataFrame(data["results"])
 
 df["time"] = pd.to_datetime(df["t"], unit="ms")
 df["time"] = df["time"].dt.strftime('%Y-%m-%d')
 
-df = df.rename(columns={
-    "o": "open",
-    "h": "high",
-    "l": "low",
-    "c": "close"
-})
+df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close"})
 
-# 📈 EMA
-df["ema_20"] = df["close"].ewm(span=20).mean()
+# =========================
+# 📈 INDICATEURS
+# =========================
 
-# 🎯 Format graphique
-candles = df[["time", "open", "high", "low", "close"]].to_dict(orient="records")
+# EMA
+df["ema20"] = df["close"].ewm(span=20).mean()
 
-ema = df[["time", "ema_20"]].rename(columns={"ema_20": "value"}).to_dict(orient="records")
+# RSI
+delta = df["close"].diff()
+gain = delta.clip(lower=0)
+loss = -delta.clip(upper=0)
 
-# 🎨 Options graphique
+avg_gain = gain.rolling(14).mean()
+avg_loss = loss.rolling(14).mean()
+
+rs = avg_gain / avg_loss
+df["rsi"] = 100 - (100 / (1 + rs))
+
+# MACD
+ema12 = df["close"].ewm(span=12).mean()
+ema26 = df["close"].ewm(span=26).mean()
+
+df["macd"] = ema12 - ema26
+df["signal"] = df["macd"].ewm(span=9).mean()
+
+# =========================
+# 🚀 SIGNAUX TEA
+# =========================
+
+df["buy"] = (
+    (df["macd"] > df["signal"]) &
+    (df["rsi"] > 40) &
+    (df["close"] > df["ema20"])
+)
+
+df["sell"] = (
+    (df["macd"] < df["signal"]) &
+    (df["rsi"] < 60)
+)
+
+# =========================
+# 🎯 FORMAT GRAPH
+# =========================
+
+candles = df[["time","open","high","low","close"]].to_dict("records")
+
+ema = df[["time","ema20"]].rename(columns={"ema20":"value"}).to_dict("records")
+
+# 🔥 MARKERS (signaux visuels)
+markers = []
+
+for i in range(len(df)):
+    if df["buy"].iloc[i]:
+        markers.append({
+            "time": df["time"].iloc[i],
+            "position": "belowBar",
+            "color": "green",
+            "shape": "arrowUp",
+            "text": "BUY"
+        })
+
+    elif df["sell"].iloc[i]:
+        markers.append({
+            "time": df["time"].iloc[i],
+            "position": "aboveBar",
+            "color": "red",
+            "shape": "arrowDown",
+            "text": "SELL"
+        })
+
+# =========================
+# 📊 CHART
+# =========================
+
 chartOptions = {
     "layout": {
         "background": {"type": "solid", "color": "#0e0e0e"},
@@ -68,10 +115,10 @@ chartOptions = {
     }
 }
 
-# 📊 Séries
 seriesCandlestickChart = {
     "type": "Candlestick",
-    "data": candles
+    "data": candles,
+    "markers": markers
 }
 
 seriesEMA = {
@@ -83,10 +130,16 @@ seriesEMA = {
     }
 }
 
-# 🚀 RENDER
 renderLightweightCharts([
     {
         "chart": chartOptions,
         "series": [seriesCandlestickChart, seriesEMA]
     }
-], 'chart')
+], "chart")
+
+# =========================
+# 📊 DEBUG (optionnel)
+# =========================
+
+with st.expander("Voir données"):
+    st.dataframe(df.tail(20))
