@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from streamlit_lightweight_charts import renderLightweightCharts
+from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
 
@@ -9,26 +10,71 @@ st.title("📊 TEA - Trading Dashboard")
 
 ticker = st.text_input("Ticker", "AAPL")
 
-# 🔥 CACHE
+# =========================
+# 🔥 DATA FUNCTION (ROBUSTE)
+# =========================
 @st.cache_data(ttl=60)
 def get_data(ticker):
     API_KEY = st.secrets["POLYGON_API_KEY"]
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2024-01-01/2024-03-01?apiKey={API_KEY}"
-    response = requests.get(url)
-    return response.json()
 
-data = get_data(ticker)
+    end = datetime.today()
+    start = end - timedelta(days=120)
 
-if "results" not in data:
-    st.error("❌ Problème API")
-    st.stop()
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}?apiKey={API_KEY}"
 
-df = pd.DataFrame(data["results"])
+    try:
+        response = requests.get(url)
 
-df["time"] = pd.to_datetime(df["t"], unit="ms")
+        if response.status_code != 200:
+            return None, f"Erreur API: {response.status_code}"
+
+        data = response.json()
+
+        if "results" not in data:
+            return None, "Aucune donnée retournée"
+
+        df = pd.DataFrame(data["results"])
+
+        if df.empty:
+            return None, "Data vide"
+
+        return df, None
+
+    except Exception as e:
+        return None, str(e)
+
+# =========================
+# 📥 LOAD DATA
+# =========================
+df, error = get_data(ticker)
+
+# 🔴 FALLBACK si problème API
+if df is None:
+    st.warning(f"⚠️ Polygon ne répond pas ({error}) → données simulées utilisées")
+
+    # données fake pour debug
+    df = pd.DataFrame({
+        "t": pd.date_range(end=datetime.today(), periods=50),
+        "o": range(100, 150),
+        "h": range(105, 155),
+        "l": range(95, 145),
+        "c": range(102, 152),
+    })
+
+# =========================
+# 📊 CLEAN DATA
+# =========================
+df["time"] = pd.to_datetime(df["t"])
 df["time"] = df["time"].dt.strftime('%Y-%m-%d')
 
-df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close"})
+df = df.rename(columns={
+    "o": "open",
+    "h": "high",
+    "l": "low",
+    "c": "close"
+})
+
+st.write(f"📊 Nombre de bougies: {len(df)}")
 
 # =========================
 # 📈 INDICATEURS
@@ -78,7 +124,7 @@ candles = df[["time","open","high","low","close"]].to_dict("records")
 
 ema = df[["time","ema20"]].rename(columns={"ema20":"value"}).to_dict("records")
 
-# 🔥 MARKERS (signaux visuels)
+# 🔥 MARKERS
 markers = []
 
 for i in range(len(df)):
@@ -136,10 +182,3 @@ renderLightweightCharts([
         "series": [seriesCandlestickChart, seriesEMA]
     }
 ], "chart")
-
-# =========================
-# 📊 DEBUG (optionnel)
-# =========================
-
-with st.expander("Voir données"):
-    st.dataframe(df.tail(20))
